@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 from urllib.parse import urlencode
 import re
+import time
 
 BASE_URL = "https://www.work24.go.kr"
 LIST_URL = f"{BASE_URL}/cm/c/a/0100/selectBbttList.do"
@@ -19,25 +20,30 @@ HEADERS = {
 # 1. 마지막 페이지 번호 추출
 # -------------------------------------------------
 def get_last_page():
-    params = {
-        "currentPageNo": 1,
-        "bbsClCd": BBS_CL_CD
-    }
-    res = requests.get(LIST_URL, params=params, headers=HEADERS)
-    res.raise_for_status()
+    try:
+        res = requests.get(
+            LIST_URL,
+            params={"currentPageNo": 1, "bbsClCd": BBS_CL_CD},
+            headers=HEADERS,
+            timeout=10
+        )
+        res.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"⚠ 마지막 페이지 조회 실패: {e}")
+        return 1
 
     soup = BeautifulSoup(res.text, "html.parser")
-
     last_btn = soup.select_one("button.btn_page.last[onclick]")
+
     if not last_btn:
         return 1
 
-    m = re.search(r"fn_Search\((\d+)\)", last_btn["onclick"])
+    m = re.search(r"fn_Search\((\d+)\)", last_btn.get("onclick", ""))
     return int(m.group(1)) if m else 1
 
 
 # -------------------------------------------------
-# 2. 게시판 전체 페이지 순회 → 게시물 수집
+# 2. 모든 목록 페이지 순회 → 게시물 수집
 # -------------------------------------------------
 def fetch_posts_all_pages():
     last_page = get_last_page()
@@ -46,15 +52,19 @@ def fetch_posts_all_pages():
     posts = []
 
     for page in range(1, last_page + 1):
-        print(f"🔍 목록 페이지 {page} 수집 중")
+        print(f"🔍 목록 페이지 {page} 수집")
 
-        params = {
-            "currentPageNo": page,
-            "bbsClCd": BBS_CL_CD
-        }
-
-        res = requests.get(LIST_URL, params=params, headers=HEADERS)
-        res.raise_for_status()
+        try:
+            res = requests.get(
+                LIST_URL,
+                params={"currentPageNo": page, "bbsClCd": BBS_CL_CD},
+                headers=HEADERS,
+                timeout=10
+            )
+            res.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"⚠ 목록 페이지 {page} 접근 실패: {e}")
+            continue
 
         soup = BeautifulSoup(res.text, "html.parser")
 
@@ -72,6 +82,8 @@ def fetch_posts_all_pages():
                 "detail_url": make_detail_url(ntceStno),
                 "files": []
             })
+
+        time.sleep(1)  # 목록 페이지 간 속도 조절
 
     return posts
 
@@ -94,11 +106,19 @@ def make_detail_url(ntceStno):
 
 
 # -------------------------------------------------
-# 4. 게시물 상세 페이지 → 첨부파일 추출
+# 4. 게시물 상세 페이지 → 첨부파일 수집 (안정화 핵심)
 # -------------------------------------------------
 def fetch_attachments(post):
-    res = requests.get(post["detail_url"], headers=HEADERS)
-    res.raise_for_status()
+    try:
+        res = requests.get(
+            post["detail_url"],
+            headers=HEADERS,
+            timeout=10
+        )
+        res.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"⚠ 상세 페이지 실패 (ntceStno={post['ntceStno']}): {e}")
+        return  # ❗ 실패해도 전체 중단 안 함
 
     soup = BeautifulSoup(res.text, "html.parser")
 
@@ -177,6 +197,7 @@ if __name__ == "__main__":
     for post in posts:
         print(f"📄 게시물 {post['ntceStno']} 첨부파일 수집")
         fetch_attachments(post)
+        time.sleep(1.5)  # ⭐ 가장 중요 (차단 방지)
 
     html = make_html(posts)
 
