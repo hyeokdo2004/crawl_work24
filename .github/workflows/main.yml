@@ -1,0 +1,35 @@
+name: Work24 Notice Weekly
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"   # 매주 월요일 00:00 (UTC)
+  workflow_dispatch:
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4
+
+      - name: Run crawler
+        run: |
+          python crawl_work24.py
+
+      - name: Commit and push result
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add work24_notice.html
+          git commit -m "Update Work24 notice" || true
+          git push
