@@ -1,8 +1,8 @@
-name: Work24 Notice Weekly
+name: Work24 Crawl
 
 on:
   schedule:
-    - cron: "0 0 * * 1"   # 매주 월요일 00:00 (UTC)
+    - cron: "0 0 * * 1"
   workflow_dispatch:
 
 jobs:
@@ -10,27 +10,73 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4
+      - name: Install deps
+        run: pip install requests beautifulsoup4
 
-      - name: Run crawler
-        run: |
-          python crawl_work24.py
+      - name: Run crawler (stdout -> JSON 파일 저장)
+        run: python crawl_work24.py > work24_data.json
 
-      - name: Commit and push result
+      - name: Generate HTML from JSON
+        run: |
+          python - <<'EOF'
+          import json, datetime
+
+          with open("work24_data.json", encoding="utf-8") as f:
+              data = json.load(f)
+
+          now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+          html = f"""<!doctype html>
+          <html lang="ko">
+          <head>
+          <meta charset="utf-8">
+          <title>Work24 수집 결과</title>
+          <style>
+          body {{ font-family: Arial, sans-serif; }}
+          h2 {{ margin-top: 40px; }}
+          ul {{ margin-left: 20px; }}
+          </style>
+          </head>
+          <body>
+          <h1>Work24 수집 결과</h1>
+          <p>생성 시각: {now}</p>
+          <hr>
+          """
+
+          for board, posts in data.items():
+              html += f"<h2>{board} ({len(posts)}건)</h2>"
+              if not posts:
+                  html += "<p>게시물 없음</p><hr>"
+                  continue
+
+              for p in posts:
+                  html += f"<p><b>{p.get('title','(제목 없음)')}</b><br><a href='{p.get('info_url','')}' target='_blank'>게시물</a></p>"
+                  atts = p.get("attachments") or []
+                  if atts:
+                      html += "<ul>"
+                      for a in atts:
+                          html += f"<li><a href='{a.get('url','')}' target='_blank'>{a.get('name','첨부파일')}</a></li>"
+                      html += "</ul>"
+                  else:
+                      html += "<p>첨부파일 없음</p>"
+              html += "<hr>"
+
+          html += "</body></html>"
+
+          with open("work24_all.html", "w", encoding="utf-8") as f:
+              f.write(html)
+          EOF
+
+      - name: Commit and push
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add work24_notice.html attachments_state.json
-          git commit -m "Update Work24 notice" || true
+          git add work24_data.json work24_all.html
+          git commit -m "Update Work24 crawl data" || true
           git push
-
