@@ -4,6 +4,8 @@ from datetime import datetime
 from urllib.parse import urlencode
 import re
 import time
+import os
+import json
 
 BASE_URL = "https://www.work24.go.kr"
 LIST_URL = f"{BASE_URL}/cm/c/a/0100/selectBbttList.do"
@@ -15,9 +17,26 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
+STATE_FILE = "attachments_state.json"
+
 
 # -------------------------------------------------
-# 1. 마지막 페이지 번호 추출
+# 상태 파일 로드 / 저장
+# -------------------------------------------------
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+# -------------------------------------------------
+# 마지막 페이지 번호
 # -------------------------------------------------
 def get_last_page():
     try:
@@ -28,24 +47,23 @@ def get_last_page():
             timeout=10
         )
         res.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"⚠ 마지막 페이지 조회 실패: {e}")
+    except requests.exceptions.RequestException:
         return 1
 
     soup = BeautifulSoup(res.text, "html.parser")
-    last_btn = soup.select_one("button.btn_page.last[onclick]")
+    btn = soup.select_one("button.btn_page.last[onclick]")
 
-    if not last_btn:
+    if not btn:
         return 1
 
-    m = re.search(r"fn_Search\((\d+)\)", last_btn.get("onclick", ""))
+    m = re.search(r"fn_Search\((\d+)\)", btn.get("onclick", ""))
     return int(m.group(1)) if m else 1
 
 
 # -------------------------------------------------
-# 2. 모든 목록 페이지 순회 → 게시물 수집
+# 게시물 목록 수집
 # -------------------------------------------------
-def fetch_posts_all_pages():
+def fetch_posts():
     last_page = get_last_page()
     print(f"📌 마지막 페이지: {last_page}")
 
@@ -62,8 +80,7 @@ def fetch_posts_all_pages():
                 timeout=10
             )
             res.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            print(f"⚠ 목록 페이지 {page} 접근 실패: {e}")
+        except requests.exceptions.RequestException:
             continue
 
         soup = BeautifulSoup(res.text, "html.parser")
@@ -79,17 +96,16 @@ def fetch_posts_all_pages():
             posts.append({
                 "ntceStno": ntceStno,
                 "title": title,
-                "detail_url": make_detail_url(ntceStno),
-                "files": []
+                "detail_url": make_detail_url(ntceStno)
             })
 
-        time.sleep(1)  # 목록 페이지 간 속도 조절
+        time.sleep(1)
 
     return posts
 
 
 # -------------------------------------------------
-# 3. 게시물 상세 URL 생성
+# 상세 URL 생성
 # -------------------------------------------------
 def make_detail_url(ntceStno):
     params = {
@@ -106,49 +122,43 @@ def make_detail_url(ntceStno):
 
 
 # -------------------------------------------------
-# 4. 게시물 상세 페이지 → 첨부파일 수집 (안정화 핵심)
+# 첨부파일 수집 (이번 실행 기준)
 # -------------------------------------------------
-def fetch_attachments(post):
+def fetch_attachments_once(post):
+    files = []
+
     try:
-        res = requests.get(
-            post["detail_url"],
-            headers=HEADERS,
-            timeout=10
-        )
+        res = requests.get(post["detail_url"], headers=HEADERS, timeout=10)
         res.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"⚠ 상세 페이지 실패 (ntceStno={post['ntceStno']}): {e}")
-        return  # ❗ 실패해도 전체 중단 안 함
+    except requests.exceptions.RequestException:
+        print(f"⚠ 상세 페이지 실패 (ntceStno={post['ntceStno']})")
+        return files
 
     soup = BeautifulSoup(res.text, "html.parser")
 
     for a in soup.select("a[onclick^='gfn_downloadAttFile3nd']"):
-        onclick = a.get("onclick", "")
         m = re.search(
             r"gfn_downloadAttFile3nd\('([^']+)'\s*,\s*'([^']+)'\)",
-            onclick
+            a.get("onclick", "")
         )
         if not m:
             continue
 
         encAthflSeq, atchFsno = m.groups()
-        filename = a.get_text(strip=True)
 
-        download_url = (
-            f"{BASE_URL}/cm/common/fileDownload3nd.do"
-            f"?encAthflSeq={encAthflSeq}&atchFsno={atchFsno}"
-        )
-
-        post["files"].append({
-            "name": filename,
-            "url": download_url
+        files.append({
+            "name": a.get_text(strip=True),
+            "url": f"{BASE_URL}/cm/common/fileDownload3nd.do"
+                   f"?encAthflSeq={encAthflSeq}&atchFsno={atchFsno}"
         })
 
+    return files
+
 
 # -------------------------------------------------
-# 5. HTML 생성
+# HTML 생성 (JSON 기준)
 # -------------------------------------------------
-def make_html(posts):
+def make_html(posts, state):
     today = datetime.now().strftime("%Y-%m-%d")
 
     html = f"""<!doctype html>
@@ -164,14 +174,16 @@ def make_html(posts):
 """
 
     for post in posts:
+        ntceStno = post["ntceStno"]
         html += f"""
 <h3>{post['title']}</h3>
 <p><a href="{post['detail_url']}" target="_blank">게시물 보기</a></p>
 """
 
-        if post["files"]:
+        files = state.get(ntceStno, [])
+        if files:
             html += "<ul>"
-            for f in post["files"]:
+            for f in files:
                 html += f'<li><a href="{f["url"]}" target="_blank">{f["name"]}</a></li>'
             html += "</ul>"
         else:
@@ -187,21 +199,36 @@ def make_html(posts):
 
 
 # -------------------------------------------------
-# 6. main
+# main
 # -------------------------------------------------
 if __name__ == "__main__":
-    print("🚀 Work24 전체 공지사항 수집 시작")
+    print("🚀 Work24 공지사항 수집 시작")
 
-    posts = fetch_posts_all_pages()
+    state = load_state()
+    posts = fetch_posts()
 
     for post in posts:
-        print(f"📄 게시물 {post['ntceStno']} 첨부파일 수집")
-        fetch_attachments(post)
-        time.sleep(1.5)  # ⭐ 가장 중요 (차단 방지)
+        ntceStno = post["ntceStno"]
+        print(f"📄 게시물 {ntceStno} 첨부파일 확인")
 
-    html = make_html(posts)
+        new_files = fetch_attachments_once(post)
+        time.sleep(1.5)
 
+        if not new_files:
+            continue
+
+        # 기존 + 신규 병합 (삭제 없음)
+        old = state.get(ntceStno, [])
+        merged = {(f["name"], f["url"]): f for f in old}
+        for f in new_files:
+            merged[(f["name"], f["url"])] = f
+
+        state[ntceStno] = list(merged.values())
+
+    save_state(state)
+
+    html = make_html(posts, state)
     with open("work24_notice.html", "w", encoding="utf-8") as f:
         f.write(html)
 
-    print("✅ work24_notice.html 생성 완료")
+    print("✅ work24_notice.html / attachments_state.json 생성 완료")
