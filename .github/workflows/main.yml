@@ -17,13 +17,70 @@ jobs:
 
       - run: pip install requests beautifulsoup4
 
+      # 1️⃣ 크롤링 (JSON state 누적)
       - name: Run crawler
         run: python crawl_work24.py
 
-      - name: Commit state
+      # 2️⃣ HTML 생성 (state → view)
+      - name: Generate HTML from state
+        run: |
+          python - <<'EOF'
+          import json, datetime
+
+          with open("work24_state.json", encoding="utf-8") as f:
+              data = json.load(f)
+
+          now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+          html = f"""<!doctype html>
+          <html lang="ko">
+          <head>
+          <meta charset="utf-8">
+          <title>Work24 수집 결과</title>
+          <style>
+            body {{ font-family: Arial, sans-serif; }}
+            h2 {{ margin-top: 40px; }}
+            ul {{ margin-left: 20px; }}
+          </style>
+          </head>
+          <body>
+          <h1>Work24 수집 결과</h1>
+          <p>생성 시각: {now}</p>
+          <hr>
+          """
+
+          for board, posts in data.items():
+              html += f"<h2>{board} ({len(posts)}건)</h2>"
+              if not posts:
+                  html += "<p>게시물 없음</p><hr>"
+                  continue
+
+              for pid, p in posts.items():
+                  html += f"<p><b>{p.get('title','(제목 없음)')}</b><br>"
+                  html += f"<a href='{p.get('detail_url','')}' target='_blank'>게시물 바로가기</a></p>"
+
+                  atts = p.get("attachments") or []
+                  if atts:
+                      html += "<ul>"
+                      for a in atts:
+                          html += f"<li><a href='{a.get('url','')}' target='_blank'>{a.get('name','첨부파일')}</a></li>"
+                      html += "</ul>"
+                  else:
+                      html += "<p>첨부파일 없음</p>"
+
+              html += "<hr>"
+
+          html += "</body></html>"
+
+          with open("work24_all.html", "w", encoding="utf-8") as f:
+              f.write(html)
+          EOF
+
+      # 3️⃣ 결과 커밋
+      - name: Commit results
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add work24_state.json
-          git commit -m "Update work24 state" || true
+          git add work24_state.json work24_all.html
+          git commit -m "Update Work24 crawl state & HTML" || true
           git push
